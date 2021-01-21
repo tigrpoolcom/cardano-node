@@ -24,7 +24,7 @@ module Cardano.Api.Modes (
 
     -- * Connection paramaters for each mode
     ConsensusModeParams(..),
-    Byron.EpochSlots,
+    Byron.EpochSlots(..),
 
     -- * Conversions to and from types in the consensus library
     ConsensusBlockForMode,
