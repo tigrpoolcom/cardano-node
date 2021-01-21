@@ -34,7 +34,8 @@ module Cardano.Api.IPC (
 --  connectToRemoteNode,
 
     -- *** Chain sync protocol
-    ChainSyncClient(..),
+    ChainSyncClient,  -- TODO this and ChainSyncClientPipelined have constructors with the same names
+    ChainSyncClientPipelined,
     BlockInMode(..),
 
     -- *** Local tx submission
@@ -56,6 +57,7 @@ module Cardano.Api.IPC (
 import           Prelude
 
 import           Data.Void (Void)
+import           Data.Kind (Type)
 
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Map.Strict as Map
@@ -68,9 +70,11 @@ import qualified Ouroboros.Network.Mux          as Net
 import qualified Ouroboros.Network.NodeToClient as Net
 import           Ouroboros.Network.NodeToClient
                    (NodeToClientProtocols(..), NodeToClientVersionData(..))
+import qualified Ouroboros.Network.Protocol.ChainSync.ClientPipelined         as Net.SyncP
 import qualified Ouroboros.Network.Protocol.ChainSync.Client         as Net.Sync
 import           Ouroboros.Network.Protocol.ChainSync.Client
                    (ChainSyncClient(..))
+import           Ouroboros.Network.Protocol.ChainSync.ClientPipelined as ClientP
 import qualified Ouroboros.Network.Protocol.LocalStateQuery.Client   as Net.Query
 import           Ouroboros.Network.Protocol.LocalStateQuery.Client
                    (LocalStateQueryClient(..))
@@ -104,7 +108,10 @@ import           Cardano.Api.TxInMode
 data LocalNodeClientProtocols block point tip tx txerr query m =
      LocalNodeClientProtocols {
        localChainSyncClient
-         :: Maybe (ChainSyncClient         block point tip   m ())
+         :: Maybe (Either
+                    (ChainSyncClientPipelined block point tip   m ())
+                    (ChainSyncClient          block point tip   m ())
+                  )
 
      , localTxSubmissionClient
          :: Maybe (LocalTxSubmissionClient tx txerr          m ())
@@ -234,13 +241,10 @@ mkVersionedProtocols networkid ptcl
     protocols ptclBlockVersion ptclVersion =
         NodeToClientProtocols {
           localChainSyncProtocol =
-            Net.InitiatorProtocolOnly $
-              Net.MuxPeer
-                nullTracer
-                cChainSyncCodec
-                (maybe Net.chainSyncPeerNull
-                       Net.Sync.chainSyncClientPeer
-                       localChainSyncClient)
+            Net.InitiatorProtocolOnly $ case localChainSyncClient of
+              Nothing -> Net.MuxPeer nullTracer cChainSyncCodec Net.chainSyncPeerNull
+              Just (Right client) -> Net.MuxPeer nullTracer cChainSyncCodec (Net.Sync.chainSyncClientPeer client)
+              Just (Left clientPipelined) -> Net.MuxPeerPipelined nullTracer cChainSyncCodec (Net.SyncP.chainSyncClientPeerPipelined clientPipelined)
 
         , localTxSubmissionProtocol =
             Net.InitiatorProtocolOnly $
@@ -342,8 +346,10 @@ convLocalNodeClientProtocols
       localStateQueryClient
     } =
     LocalNodeClientProtocols {
-      localChainSyncClient    = convLocalChainSyncClient mode <$>
-                                  localChainSyncClient,
+      localChainSyncClient    = case localChainSyncClient of
+        Nothing -> Nothing
+        Just (Left clientPipelined) -> Just $ Left $ convLocalChainSyncClientPipelined mode clientPipelined
+        Just (Right client) -> Just $ Right $ convLocalChainSyncClient mode client,
 
       localTxSubmissionClient = convLocalTxSubmissionClient mode <$>
                                   localTxSubmissionClient,
@@ -367,6 +373,54 @@ convLocalChainSyncClient mode =
       (fromConsensusBlock mode)
       (fromConsensusTip mode)
 
+convLocalChainSyncClientPipelined
+  :: forall mode block m a.
+     (ConsensusBlockForMode mode ~ block, Functor m)
+  => ConsensusMode mode
+  -> ChainSyncClientPipelined (BlockInMode mode) ChainPoint ChainTip m a
+  -> ChainSyncClientPipelined block (Net.Point block) (Net.Tip block) m a
+
+convLocalChainSyncClientPipelined mode =
+  mapChainSyncClientPipelined
+    (toConsensusPointInMode mode)
+    (fromConsensusPointInMode mode)
+    (fromConsensusBlock mode)
+    (fromConsensusTip mode)
+
+-- TODO move to Ouroboros.Network.Protocol.ChainSync.ClientPipelined
+mapChainSyncClientPipelined :: forall header header' point point' tip tip' (m :: Type -> Type) a.
+  Functor m =>
+  (point -> point')
+  -> (point' -> point)
+  -> (header' -> header)
+  -> (tip' -> tip)
+  -> ChainSyncClientPipelined header point tip m a
+  -> ChainSyncClientPipelined header' point' tip' m a
+mapChainSyncClientPipelined toPoint' toPoint toHeader toTip (ChainSyncClientPipelined mInitialIdleClient)
+  = ChainSyncClientPipelined (goIdle <$> mInitialIdleClient)
+  where
+    goIdle :: ClientPipelinedStIdle n header point tip  m a
+           -> ClientPipelinedStIdle n header' point' tip'  m a
+    goIdle client = case client of
+      SendMsgRequestNext next mNext -> SendMsgRequestNext (goNext next) (goNext <$> mNext)
+      SendMsgRequestNextPipelined idle -> SendMsgRequestNextPipelined (goIdle idle)
+      SendMsgFindIntersect points inter -> SendMsgFindIntersect (toPoint' <$> points) (goIntersect inter)
+      CollectResponse idleMay next -> CollectResponse (goIdle <$> idleMay) (goNext next)
+      SendMsgDone a -> SendMsgDone a
+
+    goNext :: ClientStNext n header point tip  m a
+           -> ClientStNext n header' point' tip'  m a
+    goNext ClientStNext{ recvMsgRollForward, recvMsgRollBackward } = ClientStNext
+      { recvMsgRollForward = \header' tip' -> goIdle <$> recvMsgRollForward (toHeader header') (toTip tip')
+      , recvMsgRollBackward = \point' tip' -> goIdle <$> recvMsgRollBackward (toPoint point') (toTip tip')
+      }
+
+    goIntersect :: ClientPipelinedStIntersect header point tip m a
+                -> ClientPipelinedStIntersect header' point' tip' m a
+    goIntersect ClientPipelinedStIntersect{ recvMsgIntersectFound, recvMsgIntersectNotFound } = ClientPipelinedStIntersect
+      { recvMsgIntersectFound = \point' tip' -> goIdle <$> recvMsgIntersectFound (toPoint point') (toTip tip')
+      , recvMsgIntersectNotFound = \tip' -> goIdle <$> recvMsgIntersectNotFound (toTip tip')
+      }
 
 convLocalTxSubmissionClient
   :: forall mode block m a.

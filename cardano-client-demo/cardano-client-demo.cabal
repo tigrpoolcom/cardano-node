@@ -24,3 +24,15 @@ executable cardano-client-demo
                        ouroboros-network,
                        time,
   default-language:    Haskell2010
+
+executable cardano-client-demo-pipeline
+  main-is:             MainPipeline.hs
+  other-modules:
+  build-depends:       base,
+                       cardano-api,
+                       cardano-ledger,
+                       filepath,
+                       ouroboros-network,
+                       time,
+                       typed-protocols,
+  default-language:    Haskell2010

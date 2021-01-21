@@ -49,7 +49,7 @@ main = do
   protocols :: IPC.LocalNodeClientProtocolsInMode IPC.CardanoMode
   protocols =
       IPC.LocalNodeClientProtocols {
-        IPC.localChainSyncClient    = Just chainSyncClient,
+        IPC.localChainSyncClient    = Just (Right chainSyncClient),
         IPC.localTxSubmissionClient = Nothing,
         IPC.localStateQueryClient   = Nothing
       }
