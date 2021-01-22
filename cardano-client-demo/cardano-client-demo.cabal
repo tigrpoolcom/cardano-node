@@ -22,4 +22,5 @@ executable cardano-client-demo
                        cardano-ledger,
                        filepath,
                        ouroboros-network,
+                       time,
   default-language:    Haskell2010
