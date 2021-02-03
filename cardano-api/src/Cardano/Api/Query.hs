@@ -1,10 +1,12 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE EmptyCase #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
-{-# LANGUAGE GeneralisedNewtypeDeriving #-}
+{-# LANGUAGE QuantifiedConstraints #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE UndecidableInstances #-}
 
 -- The Shelley ledger uses promoted data kinds which we have to use, but we do
 -- not export any from this API. We also use them unticked as nature intended.
@@ -27,23 +29,25 @@ module Cardano.Api.Query (
     fromConsensusQueryResult,
 
     -- * Wrapper types used in queries
-    LedgerState(..),
+    SerialisedLedgerState(..),
     ProtocolState(..),
+
+    LedgerState(..),
   ) where
 
-import           Data.Aeson (ToJSON(..), object, (.=))
+import           Data.Aeson (ToJSON (..), object, (.=))
 import qualified Data.Aeson as Aeson
 import           Data.Bifunctor (bimap)
 import           Data.Map (Map)
 import qualified Data.Map as Map
 import           Data.Maybe (mapMaybe)
-import           Data.Set (Set)
-import qualified Data.Text as Text
-import qualified Data.Text.Encoding as Text
-import qualified Data.Set as Set
 import           Data.SOP.Strict (SListI)
-import           Prelude
+import           Data.Set (Set)
+import qualified Data.Set as Set
+import           Data.Text (Text)
+import           Data.Typeable
 import qualified Data.Vector as Vector
+import           Prelude
 
 import           Ouroboros.Network.Protocol.LocalStateQuery.Client (Some (..))
 
@@ -58,8 +62,8 @@ import qualified Ouroboros.Consensus.Cardano.Block as Consensus
 import qualified Ouroboros.Consensus.Shelley.Ledger as Consensus
 import           Ouroboros.Network.Block (Serialised)
 
+import           Cardano.Binary
 import qualified Cardano.Chain.Update.Validation.Interface as Byron.Update
-
 import qualified Cardano.Ledger.Era as Ledger
 
 import qualified Shelley.Spec.Ledger.API as Shelley
@@ -68,12 +72,14 @@ import qualified Shelley.Spec.Ledger.LedgerState as Shelley
 import           Cardano.Api.Address
 import           Cardano.Api.Block
 import           Cardano.Api.Certificate
-import           Cardano.Api.SerialiseRaw
 import           Cardano.Api.Eras
 import           Cardano.Api.KeysShelley
 import           Cardano.Api.Modes
 import           Cardano.Api.NetworkId
-import           Cardano.Api.ProtocolParameters
+import           Cardano.Api.Orphans ()
+import           Cardano.Api.ProtocolParameters (GenesisParameters, ProtocolParameters,
+                   ProtocolParametersUpdate, fromShelleyGenesis, fromShelleyPParams,
+                   fromShelleyProposedPPUpdates)
 import           Cardano.Api.TxBody
 import           Cardano.Api.Value
 
@@ -145,7 +151,7 @@ data QueryInShelleyBasedEra era result where
      --   :: QueryInShelleyBasedEra era RewardProvenance
 
      QueryLedgerState
-       :: QueryInShelleyBasedEra era (LedgerState era)
+       :: QueryInShelleyBasedEra era (SerialisedLedgerState era)
 
      QueryProtocolState
        :: QueryInShelleyBasedEra era (ProtocolState era)
@@ -166,17 +172,51 @@ newtype UTxO era = UTxO (Map TxIn (TxOut era))
 instance IsCardanoEra era => ToJSON (UTxO era) where
   toJSON (UTxO m) = Aeson.Array . Vector.fromList . map convert $ Map.toList m
    where
+    toText :: TxIn -> Text
+    toText txin = case toJSON txin of
+                    Aeson.String txt -> txt
+                    _ -> error "failure"
     convert :: (TxIn, TxOut era) -> Aeson.Value
-    convert ((TxIn txId (TxIx ix), txout)) =
-      let txin = ( Text.decodeUtf8 (serialiseToRawBytesHex txId)
-                 <> "#"
-                 <> Text.pack (show ix)
-                 )
-      in object [ txin .= toJSON txout]
+    convert (txin, txout) = object [ toText txin .= toJSON txout]
 
 
-newtype LedgerState era
-  = LedgerState (Serialised (Shelley.NewEpochState (ShelleyLedgerEra era)))
+newtype SerialisedLedgerState era
+  = SerialisedLedgerState (Serialised (Shelley.NewEpochState (ShelleyLedgerEra era)))
+
+data LedgerState era where
+  LedgerState :: ShelleyLedgerEra era ~ ledgerera => Shelley.NewEpochState ledgerera -> LedgerState era
+
+instance (Typeable era, Shelley.TransLedgerState FromCBOR (ShelleyLedgerEra era)) => FromCBOR (LedgerState era) where
+  fromCBOR = LedgerState <$> (fromCBOR :: Decoder s (Shelley.NewEpochState (ShelleyLedgerEra era)))
+
+instance ToJSON (LedgerState ShelleyEra) where
+  toJSON (LedgerState newEpochS) = object [ "lastEpoch" .= Shelley.nesEL newEpochS
+                                          , "blocksBefore" .= Shelley.nesBprev newEpochS
+                                          , "blocksCurrent" .= Shelley.nesBcur newEpochS
+                                          , "stateBefore" .= Shelley.nesEs newEpochS
+                                          , "possibleRewardUpdate" .= Shelley.nesRu newEpochS
+                                          , "stakeDistrib" .= Shelley.nesPd newEpochS
+                                          ]
+
+instance ToJSON (LedgerState AllegraEra) where
+  toJSON (LedgerState newEpochS) = object [ "lastEpoch" .= Shelley.nesEL newEpochS
+                                          , "blocksBefore" .= Shelley.nesBprev newEpochS
+                                          , "blocksCurrent" .= Shelley.nesBcur newEpochS
+                                          , "stateBefore" .= Shelley.nesEs newEpochS
+                                          , "possibleRewardUpdate" .= Shelley.nesRu newEpochS
+                                          , "stakeDistrib" .= Shelley.nesPd newEpochS
+                                          ]
+
+
+instance ToJSON (LedgerState MaryEra) where
+  toJSON (LedgerState newEpochS) = object [ "lastEpoch" .= Shelley.nesEL newEpochS
+                                          , "blocksBefore" .= Shelley.nesBprev newEpochS
+                                          , "blocksCurrent" .= Shelley.nesBcur newEpochS
+                                          , "stateBefore" .= Shelley.nesEs newEpochS
+                                          , "possibleRewardUpdate" .= Shelley.nesRu newEpochS
+                                          , "stakeDistrib" .= Shelley.nesPd newEpochS
+                                          ]
+
 
 newtype ProtocolState era
   = ProtocolState (Serialised (Shelley.ChainDepState (Ledger.Crypto (ShelleyLedgerEra era))))
@@ -470,7 +510,7 @@ fromConsensusQueryResultShelleyBased _ (QueryStakeAddresses _ nId) q' r' =
 
 fromConsensusQueryResultShelleyBased _ QueryLedgerState{} q' r' =
     case q' of
-      Consensus.GetCBOR Consensus.DebugNewEpochState -> LedgerState r'
+      Consensus.GetCBOR Consensus.DebugNewEpochState -> SerialisedLedgerState r'
       _                                              -> fromConsensusQueryResultMismatch
 
 fromConsensusQueryResultShelleyBased _ QueryProtocolState q' r' =

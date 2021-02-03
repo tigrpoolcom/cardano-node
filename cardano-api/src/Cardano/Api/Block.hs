@@ -330,11 +330,11 @@ data ChainTip = ChainTipAtGenesis
   deriving (Eq, Show)
 
 instance ToJSON ChainTip where
-  toJSON ChainTipAtGenesis = Aeson.String "Tip is currently at genesis block"
+  toJSON ChainTipAtGenesis = Aeson.Null
   toJSON (ChainTip slot headerHash (Consensus.BlockNo bNum)) =
-    object [ "slotNo" .= slot
-           , "headerHash" .= Text.decodeUtf8 (serialiseToRawBytesHex headerHash)
-           , "blockNo" .= bNum
+    object [ "slot" .= slot
+           , "hash" .= Text.decodeUtf8 (serialiseToRawBytesHex headerHash)
+           , "block" .= bNum
            ]
 
 chainTipToChainPoint :: ChainTip -> ChainPoint
