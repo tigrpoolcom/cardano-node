@@ -36,6 +36,9 @@ test-chairmans-cluster:
 profiles:
 	@jq . $$(nix-build -A profiles)
 
+cluster-shell:
+	nix-shell --max-jobs 8 --cores 0 -A 'devops' --arg 'autoStartCluster' 'true'
+
 setup:
 	sed -ni '1,/--- 8< ---/ p' cabal.project
 
