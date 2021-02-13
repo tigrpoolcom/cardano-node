@@ -49,12 +49,15 @@ The deposit amount can be found in the `protocol.json` under `keyDeposit`, for e
 Query the UTXO of the address that pays for the transaction and deposit:
 
     cardano-cli query utxo \
+        --mary-era \
         --address $(cat payment.addr) \
         --mainnet
 
     >                            TxHash                                 TxIx        Lovelace
     > ----------------------------------------------------------------------------------------
     > b64ae44e1195b04663ab863b62337e626c65b0c9855a9fbb9ef4458f81a6f5ee     1      1000000000
+  
+    Note: The era command does age over time as a new era comes. It's structure is --<ERANAME>-era e.g: --mary-era --shelley-era, --byron-era and so on. Current era 2021-02-12 (Mary).
 
 #### Calculate the change to send back to payment address after including the deposit
 
